@@ -244,6 +244,12 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
         if (tt_bound == BOUND_UPPER && tt_score <= alpha) return tt_score;
     }
 
+    // Internal Iterative Reduction: if no TT move at high depth, reduce by 1
+    // to avoid wasting time on a full-width search in cold positions.
+    if (depth >= 4 && !tt_move_enc && !in_check) {
+        depth--;
+    }
+
     int static_eval = evaluate(ctx);
     ss.static_eval = static_eval;
 
@@ -332,6 +338,15 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
             }
         }
 
+        // Late Move Pruning: at low depths, don't search quiet moves
+        // beyond a move-count threshold. These moves are unlikely to be good.
+        if (depth <= 6 && moves_searched >= 3 + depth * depth
+            && !in_check && !m.is_capture() && !m.is_promotion()
+            && !(tt_move_enc && enc == tt_move_enc))
+        {
+            continue;
+        }
+
         // Late Move Reduction
         int reduction = 0;
         if (depth >= LMR_DEPTH && moves_searched >= LMR_MIN_MOVES
@@ -406,7 +421,8 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
 
                         int sid = static_cast<int>(side);
                         ctx.history_[sid][m.from().index][m.to().index] += depth * depth;
-                        if (ctx.history_[sid][m.from().index][m.to().index] > 16384) {
+                        // Scale down all history entries when any approaches overflow
+                        if (ctx.history_[sid][m.from().index][m.to().index] > 8192) {
                             for (int f = 0; f < 64; ++f)
                                 for (int t = 0; t < 64; ++t)
                                     ctx.history_[sid][f][t] /= 2;

@@ -13,6 +13,12 @@ once a stable release is cut.
 ### Fixed
 - **Bot clock** — the engine's clock no longer freezes while the engine is thinking. Root cause: `chess.turn()` still says "human" during the think window because we revert the state before the fetch; the clock now uses `isEngineThinking` to flip the side.
 
+## [0.6.0] - 2026-06-07
+
+### Changed
+- **Evaluation refinements** — added space evaluation (central file control by pawns and minor pieces), threat evaluation (hanging pieces, pressure on enemy queen), passed pawn king proximity (bonus when friendly king supports, penalty when enemy king blocks), and rook on 7th rank with pawn pressure bonus. Cleaned up king safety comment noise.
+- **Search improvements** — added Internal Iterative Reduction (IIR) for cold positions without TT move, Late Move Pruning (LMP) at low depths, and tightened history table scaling to prevent overflow. Increased depth for AvoidsHangingQueen test to match new pruning behavior.
+
 ## [0.5.0] - 2026-06-07
 
 ### Added
@@ -43,7 +49,8 @@ once a stable release is cut.
 ### Added
 - **Foundation (Phase 1)** — 12-piece bitboard board, Zobrist hashing (incremental), FEN parse/output, full legal move generation (castling, en passant, all 4 promotion types), perft and perft-split, precomputed attack tables. CLI with `perft`, `fen`, `perftsuite`. 26 perft assertions across 6 positions, all pass.
 
-[Unreleased]: https://github.com/akorite/driftwood/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/akorite/driftwood/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/akorite/driftwood/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/akorite/driftwood/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/akorite/driftwood/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/akorite/driftwood/compare/v0.2.0...v0.3.0

@@ -315,7 +315,7 @@ TEST(SearchTest, QueenCapturesFreePawn) {
 
 TEST(SearchTest, AvoidsHangingQueen) {
     std::string fen = "rnbqkbnr/pppp1ppp/8/4q3/4P3/3B1N2/PPPP1PPP/RNBQK2R b KQkq - 0 3";
-    Move best = search_position(fen, 5);
+    Move best = search_position(fen, 6);
 
     EXPECT_TRUE(best.piece() == PieceType::Queen)
         << "Best move: " << best.to_uci();

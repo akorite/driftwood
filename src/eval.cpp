@@ -522,15 +522,7 @@ static void evaluate_king_safety(const Board& board, Color c,
         rooks &= rooks - 1;
     }
 
-    // Queen attackers (already counted by both bishop and rook paths above — avoid double count)
-    // We counted queens twice (in bishop and rook loops). Let's fix this:
-    // Actually the bishop loop checks knight, bishop, so queen isn't in there.
-    // Wait, I moved queen to the rook loop. Let me reconsider.
-    // The code above:
-    // - Knight loop: knights only
-    // - Bishop loop: bishops only
-    // - Rook loop: rooks only
-    // Queen is not counted at all! Let me add queen.
+    // Queen attackers
     uint64_t queens = board.piece_bb(enemy, PieceType::Queen);
     while (queens) {
         int sq = __builtin_ctzll(queens);
@@ -553,35 +545,6 @@ static void evaluate_king_safety(const Board& board, Color c,
 
     int net_attackers = attack_count - defender_count;
     if (net_attackers > 0) {
-        int attack_bonus = net_attackers * KING_ATTACK_WEIGHT_PER_ATTACKER * 8;
-        // If we're evaluating for the opponent, this penalizes us (adds to mg_score)
-        // If we're evaluating for ourselves, this helps the opponent (subtracts from mg_score)
-        // So: sign is positive for white (we're evaluating white), negative for black
-        // Attack bonus helps the opponent, so for white it's negative, for black it's positive
-        // safety_score = -attack_bonus for white (worse for us), +attack_bonus for black (better for them)
-        // Since we add to mg_score: + means good for us, - means bad for us
-        // So: mg_score += opponent_attack_weight, where opponent_attack_weight is negative for us
-        // Wait, I'm confusing myself. Let me think simply:
-        // - If white has attackers near black king: good for white (+score for white)
-        // - If black has attackers near white king: good for black (-score for white)
-        // evaluate_king_safety(board, White): checks hazards near white king (bad for white)
-        // evaluate_king_safety(board, Black): checks hazards near black king (good for white)
-        //
-        // In our evaluate, we call evaluate_king_safety(board, White, ...) and it adds to mg_score.
-        // When we call it for White, we're looking at white's king safety.
-        // If black attacks white's king zone, that's bad for white, so mg_score should decrease (negative).
-        // If white defends, that reduces the penalty.
-        // So for White evaluation: net_attackers = enemy_attackers - our_defenders (positive = bad for white = negative score)
-        // mg_score += sign * (-net_attackers * weight) where sign = +1 for white
-        // mg_score += -net_attackers * weight for white
-        // mg_score += +net_attackers * weight for black (since sign = -1, -1 * -net = +net)
-        // Hmm, let me simplify:
-        // net_attackers_positive_benefits_opponent = attack_count - defender_count
-        // For white: this is bad, so subtract from score
-        // For black: this is bad for black, so add to score (since black subtracts)
-        // Using sign: mg_score += sign * (-net_attackers * weight)
-        // sign=+1 for white: mg_score += -net_attackers * weight (bad for white)
-        // sign=-1 for black: mg_score += +net_attackers * weight (bad for black = good for white)
         int safety_penalty = net_attackers * KING_ATTACK_WEIGHT_PER_ATTACKER * 8;
         mg_score += sign * (-safety_penalty);
         eg_score += sign * (-safety_penalty / 2);
@@ -674,12 +637,18 @@ static void evaluate_bishop_pair(const Board& board, Color c,
 constexpr int ROOK_SEMI_OPEN_FILE = 10;
 constexpr int ROOK_OPEN_FILE = 20;
 constexpr int ROOK_ON_SEVENTH = 20;
+constexpr int ROOK_SEVENTH_PAWN_BONUS = 15; // rook on 7th with enemy pawns there
 
 static void evaluate_rook_placement(const Board& board, Color c,
                                     int& mg_score, int& eg_score,
                                     uint64_t our_pawns, uint64_t their_pawns)
 {
     int sign = (c == Color::White) ? 1 : -1;
+    // Enemy pawns on the 7th rank (for white: rank 6; for black: rank 1)
+    uint64_t enemy_pawns_on_seventh = (c == Color::White)
+        ? their_pawns & 0x00FF000000000000ULL  // rank 7 (a7-h7)
+        : their_pawns & 0x000000000000FF00ULL;  // rank 2 (a2-h2)
+
     uint64_t rooks = board.piece_bb(c, PieceType::Rook);
     while (rooks) {
         int sq = __builtin_ctzll(rooks);
@@ -702,9 +671,234 @@ static void evaluate_rook_placement(const Board& board, Color c,
         if ((c == Color::White && r == 6) || (c == Color::Black && r == 1)) {
             mg_score += sign * ROOK_ON_SEVENTH;
             eg_score += sign * ROOK_ON_SEVENTH;
+            // Extra bonus for rook on 7th attacking enemy pawns there
+            if (enemy_pawns_on_seventh) {
+                uint64_t rook_att = rook_attacks(0, Square(static_cast<uint8_t>(sq)));
+                int pawns_threatened = popcount(rook_att & enemy_pawns_on_seventh);
+                mg_score += sign * pawns_threatened * ROOK_SEVENTH_PAWN_BONUS;
+                eg_score += sign * pawns_threatened * ROOK_SEVENTH_PAWN_BONUS;
+            }
         }
 
         rooks &= rooks - 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Space evaluation (control of the central area)
+// ---------------------------------------------------------------------------
+
+constexpr int SPACE_WEIGHT_MG = 3;
+constexpr int SPACE_WEIGHT_EG = 1;
+
+static void evaluate_space(const Board& board, Color c,
+                           int& mg_score, int& eg_score,
+                           uint64_t occ, uint64_t /*us*/)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+
+    // Space area: central 4 files (c, d, e, f), ranks 2-5 for white, 3-6 for black
+    constexpr uint64_t CENTER_FILES = 0x3C3C3C3C3C3C3C3CULL; // c,d,e,f files
+    uint64_t space_area;
+    if (c == Color::White) {
+        space_area = CENTER_FILES & 0x0000FFFF0000ULL; // ranks 2-5
+    } else {
+        space_area = CENTER_FILES & 0x00FFFF0000ULL;   // ranks 3-6
+    }
+
+    // Count squares in the space area that are controlled by our pawns or pieces
+    uint64_t our_pawns = board.piece_bb(c, PieceType::Pawn);
+    uint64_t controlled = 0;
+
+    // Pawns control squares they attack
+    controlled |= (c == Color::White)
+        ? (our_pawns << 7) & ~0x8080808080808080ULL  // left attack
+        : (our_pawns >> 7) & ~0x0101010101010101ULL;
+    controlled |= (c == Color::White)
+        ? (our_pawns << 9) & ~0x0101010101010101ULL  // right attack
+        : (our_pawns >> 9) & ~0x8080808080808080ULL;
+
+    // Minor pieces also contribute to space control
+    uint64_t knights = board.piece_bb(c, PieceType::Knight);
+    while (knights) {
+        int sq = __builtin_ctzll(knights);
+        controlled |= get_attack_tables().knight[sq];
+        knights &= knights - 1;
+    }
+    uint64_t bishops = board.piece_bb(c, PieceType::Bishop);
+    while (bishops) {
+        int sq = __builtin_ctzll(bishops);
+        controlled |= bishop_attacks(occ, Square(static_cast<uint8_t>(sq)));
+        bishops &= bishops - 1;
+    }
+
+    int space_count = popcount(controlled & space_area);
+    mg_score += sign * space_count * SPACE_WEIGHT_MG;
+    eg_score += sign * space_count * SPACE_WEIGHT_EG;
+}
+
+// ---------------------------------------------------------------------------
+// Threat evaluation (hanging pieces, safe checks)
+// ---------------------------------------------------------------------------
+
+constexpr int HANGING_PENALTY_MG = 25;
+constexpr int HANGING_PENALTY_EG = 40;
+constexpr int THREAT_ON_QUEEN_BONUS = 15;
+
+static void evaluate_threats(const Board& board, Color c,
+                             int& mg_score, int& eg_score,
+                             uint64_t us, uint64_t /*them*/,
+                             const AttackTables& att)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+    Color enemy = opposite(c);
+
+    // Our attacked pieces that are not defended
+    uint64_t our_pieces = us & ~board.piece_bb(c, PieceType::King);
+    uint64_t their_attacks = 0;
+
+    // Collect all enemy attacks
+    uint64_t enemy_knights = board.piece_bb(enemy, PieceType::Knight);
+    while (enemy_knights) {
+        int sq = __builtin_ctzll(enemy_knights);
+        their_attacks |= att.knight[sq];
+        enemy_knights &= enemy_knights - 1;
+    }
+    uint64_t enemy_bishops = board.piece_bb(enemy, PieceType::Bishop);
+    while (enemy_bishops) {
+        int sq = __builtin_ctzll(enemy_bishops);
+        their_attacks |= bishop_attacks(board.all_pieces(), Square(static_cast<uint8_t>(sq)));
+        enemy_bishops &= enemy_bishops - 1;
+    }
+    uint64_t enemy_rooks = board.piece_bb(enemy, PieceType::Rook);
+    while (enemy_rooks) {
+        int sq = __builtin_ctzll(enemy_rooks);
+        their_attacks |= rook_attacks(board.all_pieces(), Square(static_cast<uint8_t>(sq)));
+        enemy_rooks &= enemy_rooks - 1;
+    }
+    uint64_t enemy_queens = board.piece_bb(enemy, PieceType::Queen);
+    while (enemy_queens) {
+        int sq = __builtin_ctzll(enemy_queens);
+        their_attacks |= queen_attacks(board.all_pieces(), Square(static_cast<uint8_t>(sq)));
+        enemy_queens &= enemy_queens - 1;
+    }
+
+    // Our defended pieces (by pawns)
+    uint64_t our_pawns = board.piece_bb(c, PieceType::Pawn);
+    uint64_t our_pawn_defended = 0;
+    // Squares defended by our pawns: squares that our pawns attack
+    our_pawn_defended |= (c == Color::White)
+        ? ((our_pawns << 7) & ~0x8080808080808080ULL) | ((our_pawns << 9) & ~0x0101010101010101ULL)
+        : ((our_pawns >> 7) & ~0x0101010101010101ULL) | ((our_pawns >> 9) & ~0x8080808080808080ULL);
+
+    // Hanging: attacked by enemy, not defended by our pawns
+    uint64_t hanging = our_pieces & their_attacks & ~our_pawn_defended;
+
+    // Count hanging pieces by value for weighted penalty
+    int hanging_mg_penalty = 0;
+    int hanging_eg_penalty = 0;
+    uint64_t h = hanging;
+    while (h) {
+        int sq = __builtin_ctzll(h);
+        Color pc; PieceType pt;
+        if (board.piece_at(Square(static_cast<uint8_t>(sq)), pc, pt)) {
+            hanging_mg_penalty += MATERIAL[static_cast<int>(pt)] / 8;
+            hanging_eg_penalty += MATERIAL[static_cast<int>(pt)] / 6;
+        }
+        h &= h - 1;
+    }
+    mg_score += sign * (-hanging_mg_penalty);
+    eg_score += sign * (-hanging_eg_penalty);
+
+    // Threats on enemy queen (our pieces attacking their queen)
+    uint64_t enemy_queen_bb = board.piece_bb(enemy, PieceType::Queen);
+    if (enemy_queen_bb) {
+        // How many of our pieces attack the queen's square?
+        int attackers = 0;
+        // Knight attacks
+        uint64_t our_kn = board.piece_bb(c, PieceType::Knight);
+        while (our_kn) {
+            int sq = __builtin_ctzll(our_kn);
+            if (att.knight[sq] & enemy_queen_bb) attackers++;
+            our_kn &= our_kn - 1;
+        }
+        // Bishop attacks
+        uint64_t our_bi = board.piece_bb(c, PieceType::Bishop);
+        while (our_bi) {
+            int sq = __builtin_ctzll(our_bi);
+            if (bishop_attacks(board.all_pieces(), Square(static_cast<uint8_t>(sq))) & enemy_queen_bb) attackers++;
+            our_bi &= our_bi - 1;
+        }
+        // Rook attacks
+        uint64_t our_ro = board.piece_bb(c, PieceType::Rook);
+        while (our_ro) {
+            int sq = __builtin_ctzll(our_ro);
+            if (rook_attacks(board.all_pieces(), Square(static_cast<uint8_t>(sq))) & enemy_queen_bb) attackers++;
+            our_ro &= our_ro - 1;
+        }
+        if (attackers >= 1) {
+            mg_score += sign * attackers * THREAT_ON_QUEEN_BONUS;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Passed pawn king proximity
+// ---------------------------------------------------------------------------
+
+constexpr int PASSED_PAWN_FRIENDLY_KING_DIST_BONUS = -5;  // per file closer
+constexpr int PASSED_PAWN_ENEMY_KING_DIST_PENALTY = 8;    // per file closer
+
+static void evaluate_passed_pawn_kings(const Board& board, Color c,
+                                       int& /*mg_score*/, int& eg_score,
+                                       uint64_t our_pawns, uint64_t their_pawns)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+    int friendly_king_sq = board.find_king(c);
+    int enemy_king_sq = board.find_king(opposite(c));
+    if (friendly_king_sq < 0 || enemy_king_sq < 0) return;
+
+    int fk_r = friendly_king_sq / 8;
+    int fk_f = friendly_king_sq % 8;
+    int ek_r = enemy_king_sq / 8;
+    int ek_f = enemy_king_sq % 8;
+
+    uint64_t pawns = our_pawns;
+    while (pawns) {
+        int sq = __builtin_ctzll(pawns);
+        int r = sq / 8;
+        int f = sq % 8;
+        int mir_r = (c == Color::White) ? r : (7 - r);
+
+        // Only for passed pawns (simplified check)
+        bool is_passed = true;
+        // Check if any enemy pawn on same or adjacent files ahead
+        for (int af = f - 1; af <= f + 1; ++af) {
+            if (af < 0 || af > 7) continue;
+            uint64_t file_pawns = their_pawns & (0x0101010101010101ULL << af);
+            while (file_pawns) {
+                int ep = __builtin_ctzll(file_pawns);
+                int epr = ep / 8;
+                if ((c == Color::White && epr > r) || (c == Color::Black && epr < r)) {
+                    is_passed = false;
+                    break;
+                }
+                file_pawns &= file_pawns - 1;
+            }
+            if (!is_passed) break;
+        }
+
+        if (is_passed && mir_r >= 3) {
+            // Bonus for friendly king being close
+            int friendly_dist = std::abs(fk_r - r) + std::abs(fk_f - f);
+            // Penalty for enemy king being close (in endgame this matters a lot)
+            int enemy_dist = std::abs(ek_r - r) + std::abs(ek_f - f);
+
+            eg_score += sign * (10 - friendly_dist) * 2;
+            eg_score += sign * (enemy_dist - 10) * 2;
+        }
+
+        pawns &= pawns - 1;
     }
 }
 
@@ -764,6 +958,12 @@ int evaluate(const Board& board) {
     evaluate_bishop_pair(board, Color::White, mg_score, eg_score);
     evaluate_rook_placement(board, Color::White, mg_score, eg_score,
                             w_pawns, b_pawns);
+    evaluate_space(board, Color::White, mg_score, eg_score,
+                   occ, white_pieces);
+    evaluate_threats(board, Color::White, mg_score, eg_score,
+                     white_pieces, black_pieces, att);
+    evaluate_passed_pawn_kings(board, Color::White, mg_score, eg_score,
+                               w_pawns, b_pawns);
 
     // Black positional terms (subtract from score — handled internally via sign)
     evaluate_mobility(board, Color::Black, mg_score, eg_score,
@@ -777,6 +977,12 @@ int evaluate(const Board& board) {
     evaluate_bishop_pair(board, Color::Black, mg_score, eg_score);
     evaluate_rook_placement(board, Color::Black, mg_score, eg_score,
                             b_pawns, w_pawns);
+    evaluate_space(board, Color::Black, mg_score, eg_score,
+                   occ, black_pieces);
+    evaluate_threats(board, Color::Black, mg_score, eg_score,
+                     black_pieces, white_pieces, att);
+    evaluate_passed_pawn_kings(board, Color::Black, mg_score, eg_score,
+                               b_pawns, w_pawns);
 
     // Phase interpolation
     int score = (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
