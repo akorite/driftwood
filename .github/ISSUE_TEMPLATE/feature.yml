@@ -1,0 +1,25 @@
+---
+name: Feature request
+about: Suggest an idea for the engine or web UI
+title: ""
+labels: enhancement
+assignees: ''
+---
+
+## Problem
+
+What problem are you trying to solve? Is there a workaround today?
+
+## Proposed solution
+
+How would you like this to work? Be specific — UCI option names, API shapes,
+UI placement.
+
+## Alternatives considered
+
+What other approaches did you consider, and why didn't they work?
+
+## Open questions
+
+Anything you'd like to discuss before implementation (tuning parameters,
+backwards compatibility, scope).

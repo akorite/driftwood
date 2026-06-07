@@ -1,0 +1,29 @@
+---
+name: Performance
+about: Profile-guided optimization, benchmarking, or speed regression
+title: "[Perf] "
+labels: performance
+assignees: ''
+---
+
+## What did you measure?
+
+Command, FEN, depth, threads, hardware.
+
+```
+$ ./build/driftwood bench 10
+$ echo -e "position FEN\ngo depth 14" | ./build/driftwood
+```
+
+## Current numbers
+
+Paste the relevant output. For perft: nodes and wall time. For bench: NPS.
+
+## What is the target?
+
+A rough goal is enough. E.g. "double NPS on the starting position at depth 10
+on a single thread" or "search depth 12 in under 2 seconds on this position".
+
+## What did you try?
+
+If you tried anything (compiler flags, hash size, different FENs), include it.

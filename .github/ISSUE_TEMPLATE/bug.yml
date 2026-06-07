@@ -1,0 +1,49 @@
+---
+name: Bug report
+about: Something is wrong with the engine, the web UI, or the build
+title: "[Bug] "
+labels: bug
+assignees: ''
+---
+
+## What happened
+
+A clear and concise description of what the bug is.
+
+## Reproduction
+
+Steps to reproduce, ideally the smallest possible. Examples:
+
+- A FEN + depth where the engine picks a bad move
+- A specific browser action
+- A `cmake` / `ctest` error
+
+For engine correctness bugs, please include the FEN and the depth at which the
+wrong behavior shows up. Perft mismatches are especially valuable.
+
+```bash
+# Commands that trigger the bug
+./build/driftwood perft 5 "FEN"
+echo -e "position FEN\ngo depth 10" | ./build/driftwood
+```
+
+## Expected behavior
+
+What you expected to happen.
+
+## Actual behavior
+
+What actually happened — copy-paste of error output, screenshot, or a short log
+excerpt.
+
+## Environment
+
+- OS: (e.g. Ubuntu 24.04, macOS 15, Windows 11)
+- Compiler: (e.g. g++ 13.2, clang++ 18, MSVC 19.39)
+- Build type: (Debug / Release)
+- Commit: (e.g. `git rev-parse HEAD`)
+- Browser: (for web UI bugs)
+
+## Additional context
+
+Anything else — output of `--help`, related issues, screenshots.

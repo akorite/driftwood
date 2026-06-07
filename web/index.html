@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DriftWood Chess</title>
+<!--
+  Vendored third-party assets (see web/vendor/LICENSES.md):
+    - jQuery 3.7.1 (MIT) - dependency of chessboard.js
+    - chessboard.js 1.0.0 (MIT) - board widget (oakmac)
+    - chess.js 0.13.4 (BSD-2) - move logic / SAN / FEN
+    - cburnett piece set (CC BY-SA 3.0) - from Wikipedia
+-->
+<link rel="stylesheet" href="vendor/chessboard.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- Top bar -->
+<header id="topbar">
+  <div class="topbar-left">
+    <span class="brand">DriftWood</span>
+    <span id="game-status">Starting...</span>
+  </div>
+  <div class="topbar-right">
+    <span id="eval-display">Eval: -</span>
+    <span id="depth-display">Depth: -</span>
+  </div>
+</header>
+
+<!-- Main game area -->
+<main id="game-area">
+  <!-- Left: opponent info -->
+  <div id="opponent-side">
+    <div class="clock-label">Opponent</div>
+    <div id="opponent-clock" class="clock">10:00</div>
+    <div id="opponent-captured" class="captured"></div>
+  </div>
+
+  <!-- Center: board -->
+  <div id="board-container">
+    <div id="chessboard"></div>
+    <div id="move-indicator" class="hidden">
+      <span id="move-indicator-text"></span>
+    </div>
+    <div id="board-overlay">
+      <div id="board-message" class="hidden"></div>
+    </div>
+  </div>
+
+  <!-- Right: move history -->
+  <div id="history-side">
+    <div id="move-history">
+      <div id="move-list"></div>
+    </div>
+    <button id="btn-flip" title="Flip board">Flip Board</button>
+  </div>
+
+  <!-- Bottom: player info -->
+  <div id="player-side">
+    <div class="clock-label">You</div>
+    <div id="player-captured" class="captured"></div>
+    <div id="player-clock" class="clock">10:00</div>
+  </div>
+</main>
+
+<!-- Bottom controls -->
+<footer id="controls">
+  <button id="btn-new-game">New Game</button>
+  <select id="side-select">
+    <option value="white">Play White</option>
+    <option value="black">Play Black</option>
+    <option value="random">Random</option>
+  </select>
+  <select id="time-select" title="Time control">
+    <option value="60">1 min</option>
+    <option value="180">3 min</option>
+    <option value="600" selected>10 min</option>
+    <option value="1800">30 min</option>
+  </select>
+  <button id="btn-resign" disabled>Resign</button>
+  <button id="btn-offer-draw" disabled>Draw</button>
+</footer>
+
+<!-- Game over modal -->
+<div id="modal-overlay" class="hidden">
+  <div id="modal">
+    <h2 id="modal-title">Game Over</h2>
+    <p id="modal-message"></p>
+    <button id="btn-modal-new-game">New Game</button>
+  </div>
+</div>
+
+<!-- Vendored libraries, in dependency order. -->
+<script src="vendor/jquery.min.js"></script>
+<script src="vendor/chessboard.js"></script>
+<script src="vendor/chess.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

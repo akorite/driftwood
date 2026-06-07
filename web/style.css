@@ -1,0 +1,430 @@
+/* =========================================================================
+   DriftWood Web UI - Lichess-inspired dark theme
+   Board uses chessboard.js (oakmac, MIT) with cburnett piece set.
+   ========================================================================= */
+
+/* --- Reset & Base --- */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-dark: #161512;
+  --bg-medium: #272522;
+  --bg-light: #3d3a36;
+  --bg-lighter: #504d48;
+  --text-primary: #bababa;
+  --text-secondary: #8a8a8a;
+  --text-bright: #e0e0e0;
+  --accent: #7fa650;
+  --accent-hover: #8fc660;
+  --danger: #c33;
+  --danger-hover: #d44;
+  --board-light: #f0d9b5;
+  --board-dark: #b58863;
+  --board-border: #3a3a3a;
+  --board-label-light: #b58863;
+  --board-label-dark: #f0d9b5;
+  --highlight-last-move: rgba(155, 199, 0, 0.41);
+  --highlight-check: rgba(255, 0, 0, 0.8);
+  --highlight-selected: rgba(20, 85, 30, 0.5);
+  --highlight-legal: rgba(20, 85, 30, 0.4);
+  --clock-low: #cc3333;
+  --font-mono: 'SF Mono', 'Consolas', 'Liberation Mono', monospace;
+}
+
+html, body {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+  background: var(--bg-dark);
+  color: var(--text-primary);
+  overflow: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border: 1px solid var(--bg-lighter);
+  border-radius: 4px;
+  background: var(--bg-medium);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+button:hover { background: var(--bg-light); border-color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+button:disabled:hover { background: var(--bg-medium); border-color: var(--bg-lighter); }
+button:active:not(:disabled) { transform: translateY(1px); }
+
+select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--bg-lighter);
+  border-radius: 4px;
+  background: var(--bg-medium);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+/* --- Top Bar --- */
+#topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: var(--bg-medium);
+  border-bottom: 1px solid var(--bg-light);
+  height: 44px;
+}
+.topbar-left { display: flex; align-items: center; gap: 16px; }
+.brand {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-bright);
+  letter-spacing: 0.5px;
+}
+#game-status { font-size: 13px; color: var(--text-secondary); }
+.topbar-right {
+  display: flex; align-items: center; gap: 12px;
+  font-size: 13px; font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+/* --- Main Game Area --- */
+#game-area {
+  display: grid;
+  grid-template-columns: 200px 1fr 220px;
+  grid-template-rows: 1fr auto;
+  gap: 0;
+  height: calc(100vh - 44px - 50px);
+  padding: 16px;
+  max-width: min(100%, 1600px);
+  margin: 0 auto;
+}
+
+/* --- Board Container --- */
+#board-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  grid-column: 2;
+  grid-row: 1 / 3;
+  min-width: 0;
+  min-height: 0;
+}
+#chessboard {
+  width: min(72vh, 72vw, 640px);
+  aspect-ratio: 1 / 1;
+  position: relative;
+}
+
+/* chessboard.js (v1.0.0) class names - pinned to this version */
+.board-b72b1 {
+  border: 2px solid var(--board-border);
+  box-sizing: content-box;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+.square-55d63 {
+  float: left;
+  position: relative;
+  -webkit-touch-callout: none;
+    -webkit-user-select: none;
+     -khtml-user-select: none;
+       -moz-user-select: none;
+        -ms-user-select: none;
+            user-select: none;
+}
+.white-1e1d7 {
+  background-color: var(--board-light);
+  color: var(--board-label-light);
+}
+.black-3c85d {
+  background-color: var(--board-dark);
+  color: var(--board-label-dark);
+}
+.notation-322f9 {
+  cursor: default;
+  font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  font-size: 12px;
+  position: absolute;
+  font-weight: 600;
+}
+.alpha-d2270 { bottom: 1px; right: 3px; }
+.numeric-fc462 { top: 2px; left: 3px; }
+
+/* Piece images are loaded by chessboard.js via pieceTheme */
+.piece-417db {
+  position: absolute;
+  pointer-events: none;
+}
+
+/* --- Square highlights (overlaid on chessboard.js squares) --- */
+.square-highlight {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.square-highlight.last-move {
+  background: var(--highlight-last-move);
+}
+.square-highlight.selected {
+  background: var(--highlight-selected);
+}
+.square-highlight.check {
+  background: radial-gradient(circle at center,
+    rgba(255,0,0,0.9) 0%,
+    rgba(255,0,0,0.6) 25%,
+    rgba(255,0,0,0) 70%);
+}
+.square-highlight.legal-dot {
+  background: radial-gradient(circle at center,
+    rgba(0,0,0,0.18) 0%,
+    rgba(0,0,0,0.18) 30%,
+    rgba(0,0,0,0) 31%);
+}
+.square-highlight.legal-ring {
+  background: radial-gradient(circle at center,
+    transparent 0%, transparent 47%,
+    rgba(0,0,0,0.18) 48%, rgba(0,0,0,0.18) 53%,
+    transparent 54%);
+}
+
+/* --- Opponent / Player Side Panels --- */
+#opponent-side, #player-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+}
+#opponent-side { grid-column: 1; grid-row: 1; }
+#player-side { grid-column: 1; grid-row: 2; }
+
+.clock {
+  font-family: var(--font-mono);
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--text-bright);
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-lighter);
+  border-radius: 4px;
+  padding: 4px 16px;
+  min-width: 120px;
+  text-align: center;
+}
+.clock.low-time { color: var(--clock-low); }
+.clock.ended { color: var(--text-secondary); }
+
+.captured {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  min-height: 28px;
+  padding: 4px;
+  font-size: 20px;
+  line-height: 1;
+}
+.captured .piece {
+  width: 22px;
+  height: 22px;
+  background-size: cover;
+  display: inline-block;
+}
+
+/* Captured piece glyphs (Unicode, no images needed) */
+.captured-glyph {
+  display: inline-block;
+  font-size: 20px;
+  line-height: 1;
+  margin: 0 1px;
+  user-select: none;
+}
+.captured-glyph.white { color: #f0d9b5; text-shadow: 0 0 1px #000; }
+.captured-glyph.black { color: #6b4a2b; }
+
+/* --- Move History --- */
+#history-side {
+  grid-column: 3;
+  grid-row: 1 / 3;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 16px;
+}
+#move-history {
+  flex: 1;
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-lighter);
+  border-radius: 4px;
+  overflow-y: auto;
+  padding: 8px;
+  min-height: 200px;
+}
+#move-list { font-size: 14px; line-height: 1.6; }
+.move-row {
+  display: flex; gap: 4px; padding: 1px 4px; border-radius: 2px;
+}
+.move-row:hover { background: var(--bg-light); }
+.move-number {
+  color: var(--text-secondary);
+  min-width: 32px;
+  text-align: right;
+  user-select: none;
+}
+.move-uci {
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 2px;
+  color: var(--text-primary);
+  min-width: 56px;
+}
+.move-uci:hover { background: var(--bg-lighter); }
+.move-uci.current-move { background: var(--accent); color: #fff; }
+
+#btn-flip { align-self: center; width: 80px; }
+
+/* --- Bottom Controls --- */
+#controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: var(--bg-medium);
+  border-top: 1px solid var(--bg-light);
+  height: 50px;
+}
+#btn-new-game {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+#btn-new-game:hover { background: var(--accent-hover); }
+#btn-resign { color: var(--danger); border-color: var(--danger); }
+#btn-resign:hover { background: rgba(204, 51, 51, 0.15); }
+#btn-resign:disabled { opacity: 0.3; }
+#btn-offer-draw { color: var(--text-secondary); }
+
+/* --- Move indicator (thinking...) --- */
+#move-indicator {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0,0,0,0.8);
+  color: var(--text-bright);
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 13px;
+  z-index: 10;
+  pointer-events: none;
+}
+.hidden { display: none !important; }
+
+/* --- Modal --- */
+#modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+#modal {
+  background: var(--bg-medium);
+  border: 1px solid var(--bg-lighter);
+  border-radius: 8px;
+  padding: 32px 40px;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  max-width: 400px;
+}
+#modal h2 { font-size: 24px; margin-bottom: 12px; color: var(--text-bright); }
+#modal p { font-size: 16px; margin-bottom: 20px; color: var(--text-secondary); }
+#btn-modal-new-game {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+  padding: 10px 28px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+/* --- Board overlay (error states) --- */
+#board-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#board-message {
+  background: rgba(0,0,0,0.85);
+  color: var(--text-bright);
+  padding: 16px 24px;
+  border-radius: 8px;
+  font-size: 14px;
+  text-align: center;
+  max-width: 80%;
+}
+
+/* --- Scrollbar --- */
+#move-history::-webkit-scrollbar { width: 6px; }
+#move-history::-webkit-scrollbar-track { background: transparent; }
+#move-history::-webkit-scrollbar-thumb {
+  background: var(--bg-lighter);
+  border-radius: 3px;
+}
+#move-history::-webkit-scrollbar-thumb:hover { background: var(--text-secondary); }
+
+/* --- Responsive --- */
+
+/* Wide screens: make the board bigger and panels wider */
+@media (min-width: 1400px) {
+  #chessboard { width: min(78vh, 720px); }
+  #game-area { grid-template-columns: 220px 1fr 240px; }
+}
+
+/* Tablet: collapse to 1-column but keep side panels above/below board */
+@media (max-width: 900px) {
+  #game-area {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto auto;
+    padding: 8px;
+    height: calc(100vh - 44px - 50px);
+    overflow-y: auto;
+  }
+  #opponent-side { grid-column: 1; grid-row: 1; flex-direction: row; }
+  #board-container { grid-column: 1; grid-row: 2; }
+  #player-side { grid-column: 1; grid-row: 3; flex-direction: row; }
+  #history-side { grid-column: 1; grid-row: 4; padding-left: 0; max-height: 180px; }
+  #chessboard { width: min(85vw, 560px); }
+}
+
+/* Phone: stack the player info vertically next to the board */
+@media (max-width: 560px) {
+  #game-area { padding: 4px; }
+  .topbar-left { gap: 8px; }
+  .topbar-right { font-size: 11px; gap: 8px; }
+  .brand { font-size: 16px; }
+  #chessboard { width: min(96vw, 96vw); }
+  .side-card { padding: 6px 10px; }
+  .clock-time { font-size: 20px; }
+  #controls { gap: 6px; padding: 6px 8px; height: auto; }
+  #controls button { padding: 8px 12px; min-height: 36px; }
+  .captured-pieces { min-height: 18px; font-size: 16px; }
+  #move-history { min-height: 100px; max-height: 140px; }
+  #modal { padding: 24px 20px; max-width: 92vw; }
+}
+
+/* Touch device support: prevent scrolling while dragging pieces */
+@media (hover: none) and (pointer: coarse) {
+  .square-55d63 { touch-action: none; }
+}
