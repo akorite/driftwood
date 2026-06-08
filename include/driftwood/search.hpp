@@ -67,7 +67,7 @@ struct SearchStackEntry {
 
 struct ThreadContext {
     Board board;
-    Move killers_[MAX_PLY][2] = {{}};
+    Move killers_[MAX_PLY][3] = {{}};
     int history_[2][64][64] = {{}};
     uint16_t countermove_[64][64] = {{}};
     SearchStackEntry ss_[MAX_PLY] = {};

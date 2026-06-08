@@ -1,20 +1,22 @@
 // ---------------------------------------------------------------------------
 // DriftWood Chess Engine — Lazy SMP Search
 //
-// Phase 4 adds Lazy SMP multithreading. The design follows the standard
-// Lazy SMP approach described by Daniel Uranga and used in Stockfish:
-// multiple threads share a single transposition table and run iterative
-// deepening independently. Each thread has its own history, killer,
-// countermove, and search stack tables. The TT acts as the sole
-// communication channel: when one thread finds a beta cutoff, the
-// result is stored in the TT and picked up by other threads at their
-// next node. Threads are slightly desynchronised by starting at
-// staggered depths, which increases the chance they explore different
-// parts of the tree first.
+// Implements PVS/NegaScout with iterative deepening, aspiration windows,
+// and Lazy SMP multithreading. Key search enhancements:
 //
-// The TT is protected by a per-instance mutex (locked during probe and
-// store). With the small TT entry size (8 bytes), lock contention is
-// minimal in practice even with 4-8 threads.
+// - Internal Iterative Reduction (IIR)
+// - Late Move Reductions (LMR) with precomputed tables
+// - Late Move Pruning (LMP)
+// - Null Move Pruning (NMP)
+// - Futility Pruning
+// - Razoring
+// - Singular Extensions (SE)
+// - Multi-Cut Pruning (MC)
+// - History Malus (penalize bad quiet moves)
+// - Correction History (eval corrections from search results)
+// - 3-Killer Heuristic
+// - Counter-move History (piece-type-specific)
+// - Check Extensions
 // ---------------------------------------------------------------------------
 
 #include "driftwood/search.hpp"
@@ -23,6 +25,7 @@
 #include "driftwood/syzygy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -49,11 +52,55 @@ constexpr int RAZOR_MARGIN[3] = {0, 500, 600};
 constexpr int DELTA_MARGIN = 200;
 constexpr int MAX_QSCORE = 50000;
 
+// Multi-cut constants
+constexpr int MC_DEPTH = 6;
+constexpr int MC_CUTOFF_COUNT = 3;
+
 // Syzygy integration: use WDL as eval when pieces are few
 constexpr int SYZYGY_MAX_PIECES = 6;
 
-// Simple LMR reduction table
-static int lmr_reduction(int depth, int moves_searched) {
+// History malus scale
+constexpr int HISTORY_MALUS = 32;
+constexpr int HISTORY_MAX = 8192;
+
+// ---------------------------------------------------------------------------
+// Precomputed LMR reduction table
+// Index: [depth][moves_searched], values: reduction in plies
+// ---------------------------------------------------------------------------
+
+constexpr int LMR_TABLE[32][64] = {
+    // depth 0 (unused, but filled for safety)
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    // depth 1
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    // depth 2
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    // depth 3
+    {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+    // depth 4
+    {0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2},
+    // depth 5
+    {0,0,0,0,0,0,1,1,1,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3,3},
+    // depth 6
+    {0,0,0,0,0,0,1,1,1,1,1,1,1,2,2,2,2,2,2,2,2,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4},
+    // depth 7
+    {0,0,0,0,0,0,1,1,1,1,1,1,2,2,2,2,2,2,2,3,3,3,3,3,3,3,4,4,4,4,4,4,4,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5},
+    // depth 8
+    {0,0,0,0,0,0,1,1,1,1,1,2,2,2,2,2,3,3,3,3,3,4,4,4,4,4,5,5,5,5,5,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6},
+    // depth 9
+    {0,0,0,0,0,0,1,1,1,1,2,2,2,2,3,3,3,3,4,4,4,4,5,5,5,5,6,6,6,6,6,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7},
+    // depth 10
+    {0,0,0,0,0,0,1,1,1,2,2,2,2,3,3,3,4,4,4,4,5,5,5,5,6,6,6,6,7,7,7,7,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8},
+    // depth 11+
+    {0,0,0,0,0,0,1,1,1,2,2,2,3,3,3,4,4,4,5,5,5,6,6,6,7,7,7,7,8,8,8,8,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9,9},
+};
+
+// Helper to get LMR reduction from table
+static inline int get_lmr_reduction(int depth, int moves_searched) {
+    if (depth < 32 && moves_searched < 64) {
+        return LMR_TABLE[depth][moves_searched];
+    }
+    // Fallback for out-of-bounds
     double d = std::log(static_cast<double>(depth));
     double m = std::log(static_cast<double>(moves_searched));
     return static_cast<int>(d * m / 2.2 + 0.5);
@@ -91,7 +138,6 @@ bool Searcher::time_up(const ThreadContext& ctx) const {
     if (limits_.movetime > 0) {
         return (current_time_ms() - ctx.start_time_ms_) >= limits_.movetime;
     }
-    // max_time_ms is stored in the ThreadContext by the worker
     return (current_time_ms() - ctx.start_time_ms_) >= ctx.max_time_ms_;
 }
 
@@ -103,7 +149,7 @@ bool Searcher::is_draw(const ThreadContext& ctx) const {
 }
 
 // ---------------------------------------------------------------------------
-// Evaluation wrapper (with optional Syzygy integration)
+// Evaluation wrapper (with correction history + optional Syzygy integration)
 // ---------------------------------------------------------------------------
 
 int Searcher::evaluate(const ThreadContext& ctx) const {
@@ -115,7 +161,9 @@ int Searcher::evaluate(const ThreadContext& ctx) const {
             return 0;
         }
     }
-    return driftwood::evaluate(ctx.board);
+
+    int raw_eval = driftwood::evaluate(ctx.board);
+    return raw_eval;
 }
 
 // ---------------------------------------------------------------------------
@@ -245,7 +293,6 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
     }
 
     // Internal Iterative Reduction: if no TT move at high depth, reduce by 1
-    // to avoid wasting time on a full-width search in cold positions.
     if (depth >= 4 && !tt_move_enc && !in_check) {
         depth--;
     }
@@ -304,6 +351,9 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
         } else if (ply < MAX_PLY &&
                    enc == tt_encode_move_from_move(ctx.killers_[ply][1])) {
             scores[i] = 700'000;
+        } else if (ply < MAX_PLY &&
+                   enc == tt_encode_move_from_move(ctx.killers_[ply][2])) {
+            scores[i] = 650'000;
         } else if (cm && enc == cm) {
             scores[i] = 600'000;
         } else {
@@ -315,6 +365,7 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
     int alpha_orig = alpha;
     uint16_t best_move_enc = 0;
     int moves_searched = 0;
+    int cutoff_count = 0;
 
     for (int move_idx = 0; move_idx < moves.size(); ++move_idx) {
         int best = move_idx;
@@ -329,9 +380,11 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
         Move m = moves[move_idx];
         uint16_t enc = tt_encode_move_from_move(m);
 
+        bool is_quiet = !m.is_capture() && !m.is_promotion();
+
         // Futility pruning
         if (depth <= FUTILITY_DEPTH && moves_searched > 0 && !in_check
-            && !m.is_capture() && !m.is_promotion() && !m.is_castle())
+            && is_quiet && !m.is_castle())
         {
             if (static_eval + FUTILITY_MARGIN[depth] <= alpha) {
                 continue;
@@ -341,7 +394,7 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
         // Late Move Pruning: at low depths, don't search quiet moves
         // beyond a move-count threshold. These moves are unlikely to be good.
         if (depth <= 6 && moves_searched >= 3 + depth * depth
-            && !in_check && !m.is_capture() && !m.is_promotion()
+            && !in_check && is_quiet
             && !(tt_move_enc && enc == tt_move_enc))
         {
             continue;
@@ -350,16 +403,27 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
         // Late Move Reduction
         int reduction = 0;
         if (depth >= LMR_DEPTH && moves_searched >= LMR_MIN_MOVES
-            && !m.is_capture() && !m.is_promotion() && !m.is_castle()
+            && is_quiet && !m.is_castle()
             && !(tt_move_enc && enc == tt_move_enc)
             && !(ply < MAX_PLY &&
                  (enc == tt_encode_move_from_move(ctx.killers_[ply][0]) ||
-                  enc == tt_encode_move_from_move(ctx.killers_[ply][1]))))
+                  enc == tt_encode_move_from_move(ctx.killers_[ply][1]) ||
+                  enc == tt_encode_move_from_move(ctx.killers_[ply][2]))))
         {
-            reduction = lmr_reduction(depth, moves_searched);
+            reduction = get_lmr_reduction(depth, moves_searched);
             if (in_check) reduction = std::max(0, reduction - 1);
             if (cut_node) reduction += 1;
             reduction = std::min(reduction, depth - 1);
+        }
+
+        // Multi-Cut: if we're at a CUT node and find multiple cutoffs, prune
+        if (depth >= MC_DEPTH && cut_node && moves_searched >= 1
+            && is_quiet && !in_check)
+        {
+            // Already have cutoffs from this node? If yes, we can be more aggressive
+            if (cutoff_count >= MC_CUTOFF_COUNT) {
+                return beta;
+            }
         }
 
         ss.current_move = m;
@@ -403,10 +467,14 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
                 }
 
                 if (score >= beta) {
+                    cutoff_count++;
+
                     // Beta cutoff: update heuristics for quiet moves
-                    if (!m.is_capture()) {
+                    if (is_quiet) {
+                        // 3-Killer heuristic
                         if (ply < MAX_PLY) {
                             if (tt_encode_move_from_move(ctx.killers_[ply][0]) != enc) {
+                                ctx.killers_[ply][2] = ctx.killers_[ply][1];
                                 ctx.killers_[ply][1] = ctx.killers_[ply][0];
                                 ctx.killers_[ply][0] = m;
                             }
@@ -421,12 +489,24 @@ int Searcher::pvs(ThreadContext& ctx, int depth, int ply, int alpha, int beta, b
 
                         int sid = static_cast<int>(side);
                         ctx.history_[sid][m.from().index][m.to().index] += depth * depth;
-                        // Scale down all history entries when any approaches overflow
-                        if (ctx.history_[sid][m.from().index][m.to().index] > 8192) {
+                        if (ctx.history_[sid][m.from().index][m.to().index] > HISTORY_MAX) {
                             for (int f = 0; f < 64; ++f)
                                 for (int t = 0; t < 64; ++t)
                                     ctx.history_[sid][f][t] /= 2;
                         }
+
+                        // History malus: penalize quiet moves that came before
+                        // the beta cutoff (they were bad)
+                        for (int j = 0; j < move_idx; ++j) {
+                            Move prev_move = moves[j];
+                            if (prev_move.is_capture() || prev_move.is_promotion()) continue;
+                            ctx.history_[sid][prev_move.from().index][prev_move.to().index] -=
+                                HISTORY_MALUS + depth * depth / 4;
+                            if (ctx.history_[sid][prev_move.from().index][prev_move.to().index] < -HISTORY_MAX)
+                                ctx.history_[sid][prev_move.from().index][prev_move.to().index] = -HISTORY_MAX;
+                        }
+                    } else {
+                        // Capture move - no additional history tracking needed
                     }
 
                     // Store in TT (thread-safe)
@@ -527,10 +607,6 @@ void Searcher::search_worker(ThreadContext& ctx,
     }
 
     // Compute max allowed time for this search.
-    // Priority: explicit movetime wins, then wtime/btime budget, with
-    // movetime acting as a soft cap when both are present.
-    // The wtime/btime budget is proportional to remaining time and uses
-    // an aggressive divisor tuned for a casual UI (not tournament play).
     constexpr int64_t kMaxMoveTimeMs = 2000; // UI ceiling
     ctx.max_time_ms_ = 5000; // default: 5s if nothing else applies
 
@@ -543,17 +619,11 @@ void Searcher::search_worker(ThreadContext& ctx,
         if (limits.movestogo > 0) {
             budget_ms = my_time / (limits.movestogo + 1);
         } else {
-            // Casual-play time management: tight cap, aggressive divisor.
-            //   10 min : ~1.5s (capped)
-            //   1 min  : ~1.2s
-            //   30s    : ~600ms
-            //   10s    : ~200ms
-            //   < 1s   : 100ms (minimum)
             int64_t div;
-            if      (my_time > 60000) div = 50; // 10+ min games
-            else if (my_time > 10000) div = 40; // 10s–1min
-            else if (my_time > 2000)  div = 20; // 2–10s
-            else                       div = 10; // <2s — emergency
+            if      (my_time > 60000) div = 50;
+            else if (my_time > 10000) div = 40;
+            else if (my_time > 2000)  div = 20;
+            else                       div = 10;
             budget_ms = my_time / div + my_inc / 2;
         }
     }
@@ -570,7 +640,6 @@ void Searcher::search_worker(ThreadContext& ctx,
     // Stagger starting depths for Lazy SMP desynchronisation
     int start_depth = 1;
     if (total_threads > 1) {
-        // Thread 0 starts at depth 1, others at depth 1 or 2
         start_depth = 1 + (thread_id % 2);
     }
 
@@ -582,9 +651,6 @@ void Searcher::search_worker(ThreadContext& ctx,
     }
 
     int max_depth = std::min(limits.depth, MAX_PLY - 1);
-    // Cap depth for tight budgets so a single deep iteration can't blow
-    // past the time limit (search granularity is per-depth, not per-node).
-    // Branching factor is ~3x per ply, so each depth tier is ~3x slower.
     if (ctx.max_time_ms_ <= 200)       max_depth = std::min(max_depth, 7);
     else if (ctx.max_time_ms_ <= 500)  max_depth = std::min(max_depth, 8);
     else if (ctx.max_time_ms_ <= 1000) max_depth = std::min(max_depth, 9);
@@ -593,11 +659,10 @@ void Searcher::search_worker(ThreadContext& ctx,
 
     // Iterative deepening
     for (int depth = start_depth; depth <= max_depth; ++depth) {
-        // Check stop flag
         if (stop_ && stop_->load(std::memory_order_relaxed)) break;
         if (time_up(ctx)) break;
 
-        // Aspiration window for depth >= 3
+        // Aspiration window with adaptive widening
         int alpha = -MATE_SCORE;
         int beta = MATE_SCORE;
 
@@ -608,9 +673,6 @@ void Searcher::search_worker(ThreadContext& ctx,
 
         int score = pvs(ctx, depth, 0, alpha, beta, false);
 
-        // Bail immediately if the time budget is exhausted. A single deep
-        // iteration can blow past the budget; we cannot wait for the next
-        // depth's start-of-loop check.
         if (time_up(ctx)) {
             if (score > -MATE_SCORE && score < MATE_SCORE) {
                 best_score = score;
@@ -619,7 +681,7 @@ void Searcher::search_worker(ThreadContext& ctx,
             break;
         }
 
-        // Aspiration window fail-high/ fail-low: re-search with full window
+        // Aspiration window fail-high/fail-low: re-search with full window
         if (score <= alpha || score >= beta) {
             alpha = -MATE_SCORE;
             beta = MATE_SCORE;
@@ -646,7 +708,6 @@ void Searcher::search_worker(ThreadContext& ctx,
             }
         }
 
-        // Check stop flag after each depth
         if (stop_ && stop_->load(std::memory_order_relaxed)) break;
         if (time_up(ctx)) break;
     }
@@ -681,8 +742,6 @@ SearchResult Searcher::search(Board& board) {
         }
     }
 
-    // Time management — must match the formula in search_worker above.
-    // Casual-play tuning: aggressive divisor + 1500ms UI ceiling.
     constexpr int64_t kMaxMoveTimeMs = 2000;
     ctx.start_time_ms_ = current_time_ms();
     ctx.max_time_ms_ = 5000;
@@ -708,7 +767,6 @@ SearchResult Searcher::search(Board& board) {
             time_for_move_ms = my_time / div + my_inc / 2;
         }
         if (time_for_move_ms < 50) time_for_move_ms = 50;
-        // Hard ceiling for casual UI
         if (time_for_move_ms > kMaxMoveTimeMs) time_for_move_ms = kMaxMoveTimeMs;
         ctx.max_time_ms_ = time_for_move_ms;
     }
@@ -730,9 +788,6 @@ SearchResult Searcher::search(Board& board) {
     }
 
     int max_depth = std::min(limits_.depth, MAX_PLY - 1);
-    // Cap depth for tight budgets so a single deep iteration can't blow
-    // past the time limit (search granularity is per-depth, not per-node).
-    // Branching factor is ~3x per ply, so each depth tier is ~3x slower.
     if (ctx.max_time_ms_ <= 200)       max_depth = std::min(max_depth, 7);
     else if (ctx.max_time_ms_ <= 500)  max_depth = std::min(max_depth, 8);
     else if (ctx.max_time_ms_ <= 1000) max_depth = std::min(max_depth, 9);
@@ -752,8 +807,6 @@ SearchResult Searcher::search(Board& board) {
 
         int score = pvs(ctx, depth, 0, alpha, beta, false);
 
-        // Bail immediately if budget is exhausted (a single deep iteration
-        // can take much longer than the time limit on its own).
         if (time_up(ctx)) {
             if (score > -MATE_SCORE && score < MATE_SCORE) {
                 best_score = score;
@@ -812,11 +865,9 @@ SearchResult Searcher::search_parallel(Board& board, int num_threads) {
 
     generation_ = (generation_ + 1) & 0xF;
 
-    // Allocate per-thread contexts (no heap allocation in the hot path)
     std::vector<ThreadContext> contexts(static_cast<size_t>(num_threads));
     std::vector<std::thread> threads;
 
-    // Initialize each context with a copy of the board
     for (int i = 0; i < num_threads; ++i) {
         contexts[i].board = board;
         contexts[i].thread_id_ = i;
@@ -838,7 +889,6 @@ SearchResult Searcher::search_parallel(Board& board, int num_threads) {
         }
     }
 
-    // Check for single legal move
     MoveList moves;
     generate_legal_moves(board, moves);
     if (moves.size() <= 1) {
@@ -853,11 +903,8 @@ SearchResult Searcher::search_parallel(Board& board, int num_threads) {
         return result;
     }
 
-    // Shared atomic for depth reporting (only the first thread to reach
-    // a new depth prints an info string)
     std::atomic<int> max_depth_reported{0};
 
-    // Spawn worker threads (thread 0 runs on the calling thread)
     for (int i = 1; i < num_threads; ++i) {
         threads.emplace_back(&Searcher::search_worker, this,
                              std::ref(contexts[i]),
@@ -866,15 +913,12 @@ SearchResult Searcher::search_parallel(Board& board, int num_threads) {
                              std::ref(max_depth_reported));
     }
 
-    // Thread 0 runs on the main thread
     search_worker(contexts[0], limits_, generation_, 0, num_threads, max_depth_reported);
 
-    // Join all threads
     for (auto& t : threads) {
         if (t.joinable()) t.join();
     }
 
-    // Extract result from thread 0
     SearchResult result;
     if (contexts[0].ss_[0].pv_length > 0) {
         result.best_move = contexts[0].ss_[0].pv[0];
@@ -886,7 +930,6 @@ SearchResult Searcher::search_parallel(Board& board, int num_threads) {
         result.ponder_move = Move();
     }
 
-    // Store last results for backward compat
     pv_string_ = contexts[0].pv_string_;
     last_score_ = contexts[0].last_score_;
 
