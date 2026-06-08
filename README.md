@@ -28,6 +28,44 @@ A ~2400 ELO chess engine written in C++17. Single binary, no dependencies, no in
 
 **Why another chess engine?** Most serious engines are CLI-only and require a separate GUI. DriftWood ships one binary that speaks UCI, has a web UI baked in, and has a clean enough codebase to read, learn from, and hack on.
 
+```mermaid
+graph TB
+    subgraph "driftwood (single binary)"
+        UI["Web UI<br/>chessboard.js + chess.js"]
+        HTTP["HTTP Server<br/>cpp-httplib"]
+        UCI["UCI Protocol"]
+        SEARCH["Searcher<br/>PVS + Lazy SMP"]
+        EVAL["Evaluation"]
+        TT["Transposition Table"]
+        BOOK["Opening Book"]
+        SYZYGY["Syzygy Tablebases"]
+        BOARD["Board<br/>bitboards + Zobrist"]
+        MOVEGEN["Move Generation<br/>magic bitboards"]
+    end
+
+    UI <-->|REST API| HTTP
+    UCI <--> SEARCH
+    HTTP --> SEARCH
+    SEARCH --> EVAL
+    SEARCH --> TT
+    SEARCH --> BOOK
+    SEARCH --> SYZYGY
+    EVAL --> BOARD
+    SEARCH --> BOARD
+    BOARD --> MOVEGEN
+
+    style UI fill:#2d3748,stroke:#718096,color:#e2e8f0
+    style HTTP fill:#2d3748,stroke:#718096,color:#e2e8f0
+    style UCI fill:#2d3748,stroke:#718096,color:#e2e8f0
+    style SEARCH fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style EVAL fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style TT fill:#2f855a,stroke:#38a169,color:#fff
+    style BOOK fill:#2f855a,stroke:#38a169,color:#fff
+    style SYZYGY fill:#2f855a,stroke:#38a169,color:#fff
+    style BOARD fill:#744210,stroke:#d69e2e,color:#fff
+    style MOVEGEN fill:#744210,stroke:#d69e2e,color:#fff
+```
+
 ## Play Now
 
 ```bash
@@ -60,14 +98,50 @@ DriftWood is a real chess engine, not a toy. It has the search techniques you'd 
 
 ### Search
 
-Principal Variation Search with iterative deepening and aspiration windows:
+```mermaid
+flowchart TD
+    ID["Iterative Deepening<br/>depth 1, 2, 3, ..."]
+    AW["Aspiration Window<br/>narrow search first"]
+    PVS["PVS: Search root move"]
+    ORDER["Move Ordering<br/>TT hash > MVV-LVA > Killers > History"]
+    PRUNE{"Pruning checks"}
+    LMR["LMR: reduce late moves"]
+    NMP["Null-Move: skip side, search reduced"]
+    FUTILITY["Futility: prune at frontier"]
+    RAZOR["Razoring: drop to qsearch"]
+    EXTEND["Check Extension: +1 ply"]
+    QS["Quiescence Search<br/>captures only, stand-pat"]
+    STORE["Store in TT"]
+    NEXT{"More moves?"}
+    DEEPER{"time_up?"}
 
-- **LMR**: Late-move reductions with hand-tuned reduction table
-- **Null-move pruning**: free tempo search at reduced depth
-- **Futility & razoring**: prune hopeless branches at the frontier
-- **IIR**: Internal Iterative Reduction for cold positions
-- **LMP**: Late Move Pruning at low depths
-- **Quiescence search**: stand-pat + captures only, delta pruning
+    ID --> AW --> PVS --> ORDER --> PRUNE
+    PRUNE -->|quiet + low depth| LMR
+    PRUNE -->|non-endgame| NMP
+    PRUNE -->|frontier, eval < alpha| FUTILITY
+    PRUNE -->|very low depth| RAZOR
+    PRUNE -->|in check| EXTEND
+    LMR --> NEXT
+    NMP --> NEXT
+    FUTILITY --> NEXT
+    RAZOR --> QS --> NEXT
+    EXTEND --> PVS
+    NEXT -->|yes| PVS
+    NEXT -->|no| STORE --> DEEPER
+    DEEPER -->|no| ID
+    DEEPER -->|yes| DONE["Return best move"]
+
+    style ID fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style PVS fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style QS fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style PRUNE fill:#c53030,stroke:#e53e3e,color:#fff
+    style LMR fill:#744210,stroke:#d69e2e,color:#fff
+    style NMP fill:#744210,stroke:#d69e2e,color:#fff
+    style FUTILITY fill:#744210,stroke:#d69e2e,color:#fff
+    style RAZOR fill:#744210,stroke:#d69e2e,color:#fff
+    style EXTEND fill:#2f855a,stroke:#38a169,color:#fff
+    style STORE fill:#2f855a,stroke:#38a169,color:#fff
+```
 
 ### Evaluation
 
@@ -78,6 +152,41 @@ Principal Variation Search with iterative deepening and aspiration windows:
 - Passed pawn king proximity
 
 ### Threading
+
+```mermaid
+flowchart LR
+    subgraph shared["Shared State"]
+        TT["Transposition Table<br/>(1-1024 MB)"]
+    end
+
+    subgraph t0["Thread 0"]
+        H0["History"]
+        K0["Killers"]
+        C0["Countermove"]
+    end
+
+    subgraph t1["Thread 1"]
+        H1["History"]
+        K1["Killers"]
+        C1["Countermove"]
+    end
+
+    subgraph tN["Thread N"]
+        HN["History"]
+        KN["Killers"]
+        CN["Countermove"]
+    end
+
+    t0 <-->|read/write| TT
+    t1 <-->|read/write| TT
+    tN <-->|read/write| TT
+
+    style shared fill:#2f855a,stroke:#38a169,color:#fff
+    style TT fill:#2b6cb0,stroke:#3182ce,color:#fff
+    style t0 fill:#2d3748,stroke:#718096,color:#e2e8f0
+    style t1 fill:#2d3748,stroke:#718096,color:#e2e8f0
+    style tN fill:#2d3748,stroke:#718096,color:#e2e8f0
+```
 
 **Lazy SMP**: multiple threads share one transposition table, each with private history/killers/countermover. Thread count configurable via UCI (`setoption name Threads value 4`).
 
