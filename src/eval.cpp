@@ -872,7 +872,6 @@ static void evaluate_passed_pawn_kings(const Board& board, Color c,
 
         // Only for passed pawns (simplified check)
         bool is_passed = true;
-        // Check if any enemy pawn on same or adjacent files ahead
         for (int af = f - 1; af <= f + 1; ++af) {
             if (af < 0 || af > 7) continue;
             uint64_t file_pawns = their_pawns & (0x0101010101010101ULL << af);
@@ -889,9 +888,7 @@ static void evaluate_passed_pawn_kings(const Board& board, Color c,
         }
 
         if (is_passed && mir_r >= 3) {
-            // Bonus for friendly king being close
             int friendly_dist = std::abs(fk_r - r) + std::abs(fk_f - f);
-            // Penalty for enemy king being close (in endgame this matters a lot)
             int enemy_dist = std::abs(ek_r - r) + std::abs(ek_f - f);
 
             eg_score += sign * (10 - friendly_dist) * 2;
@@ -899,6 +896,296 @@ static void evaluate_passed_pawn_kings(const Board& board, Color c,
         }
 
         pawns &= pawns - 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Connected passed pawns bonus
+// ---------------------------------------------------------------------------
+
+constexpr int CONNECTED_PASSER_BONUS_MG[8] = {0, 0, 5, 10, 20, 35, 55, 0};
+constexpr int CONNECTED_PASSER_BONUS_EG[8] = {0, 0, 10, 20, 40, 70, 110, 0};
+
+static void evaluate_connected_passers(const Board& board, Color c,
+                                       int& mg_score, int& eg_score,
+                                       uint64_t our_pawns, uint64_t their_pawns)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+
+    uint64_t pawns = our_pawns;
+    while (pawns) {
+        int sq = __builtin_ctzll(pawns);
+        int r = sq / 8;
+        int f = sq % 8;
+        int mir_r = (c == Color::White) ? r : (7 - r);
+
+        if (mir_r < 2) { pawns &= pawns - 1; continue; }
+
+        // Check if passed
+        bool is_passed = true;
+        for (int af = f - 1; af <= f + 1; ++af) {
+            if (af < 0 || af > 7) continue;
+            uint64_t file_pawns = their_pawns & (0x0101010101010101ULL << af);
+            while (file_pawns) {
+                int ep = __builtin_ctzll(file_pawns);
+                int epr = ep / 8;
+                if ((c == Color::White && epr > r) || (c == Color::Black && epr < r)) {
+                    is_passed = false;
+                    break;
+                }
+                file_pawns &= file_pawns - 1;
+            }
+            if (!is_passed) break;
+        }
+
+        if (is_passed) {
+            // Check adjacent files for friendly passed pawns
+            bool connected = false;
+            for (int af = f - 1; af <= f + 1; af += 2) {
+                if (af < 0 || af > 7) continue;
+                uint64_t adj_pawns = our_pawns & (0x0101010101010101ULL << af);
+                while (adj_pawns) {
+                    int asq = __builtin_ctzll(adj_pawns);
+                    int ar = asq / 8;
+                    int amir_r = (c == Color::White) ? ar : (7 - ar);
+                    // Adjacent passer on nearby rank
+                    if (std::abs(amir_r - mir_r) <= 1) {
+                        connected = true;
+                        break;
+                    }
+                    adj_pawns &= adj_pawns - 1;
+                }
+                if (connected) break;
+            }
+
+            if (connected) {
+                mg_score += sign * CONNECTED_PASSER_BONUS_MG[mir_r];
+                eg_score += sign * CONNECTED_PASSER_BONUS_EG[mir_r];
+            }
+        }
+
+        pawns &= pawns - 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Rook behind passed pawn
+// ---------------------------------------------------------------------------
+
+constexpr int ROOK_BEHIND_PASSER_MG = 15;
+constexpr int ROOK_BEHIND_PASSER_EG = 25;
+
+static void evaluate_rook_behind_passer(const Board& board, Color c,
+                                        int& mg_score, int& eg_score,
+                                        uint64_t our_pawns, uint64_t their_pawns,
+                                        uint64_t our_rooks)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+
+    // Find all our passed pawns
+    uint64_t passers = 0;
+    uint64_t pawns = our_pawns;
+    while (pawns) {
+        int sq = __builtin_ctzll(pawns);
+        int r = sq / 8;
+        int f = sq % 8;
+
+        bool is_passed = true;
+        for (int af = f - 1; af <= f + 1; ++af) {
+            if (af < 0 || af > 7) continue;
+            uint64_t file_pawns = their_pawns & (0x0101010101010101ULL << af);
+            while (file_pawns) {
+                int ep = __builtin_ctzll(file_pawns);
+                int epr = ep / 8;
+                if ((c == Color::White && epr > r) || (c == Color::Black && epr < r)) {
+                    is_passed = false;
+                    break;
+                }
+                file_pawns &= file_pawns - 1;
+            }
+            if (!is_passed) break;
+        }
+        if (is_passed) passers |= (1ULL << sq);
+        pawns &= pawns - 1;
+    }
+
+    if (!passers) return;
+
+    // Check if our rook is behind a passed pawn
+    uint64_t rooks = our_rooks;
+    while (rooks) {
+        int rsq = __builtin_ctzll(rooks);
+        int rf = rsq % 8;
+        int rr = rsq / 8;
+
+        // Check if any passer is on the same file
+        uint64_t file_passers = passers & (0x0101010101010101ULL << rf);
+        while (file_passers) {
+            int psq = __builtin_ctzll(file_passers);
+            int pr = psq / 8;
+
+            // Rook must be behind the passer (lower rank for white, higher for black)
+            bool behind = (c == Color::White && rr < pr) ||
+                          (c == Color::Black && rr > pr);
+            if (behind) {
+                mg_score += sign * ROOK_BEHIND_PASSER_MG;
+                eg_score += sign * ROOK_BEHIND_PASSER_EG;
+                break;
+            }
+            file_passers &= file_passers - 1;
+        }
+        rooks &= rooks - 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// King attack units (weighted attacker values near king zone)
+// ---------------------------------------------------------------------------
+
+// Attack unit weights: knight=2, bishop=2, rook=3, queen=5
+constexpr int ATTACK_UNIT_WEIGHT[6] = {0, 2, 2, 3, 5, 0};
+constexpr int KING_DANGER_THRESHOLD = 8;
+constexpr int KING_DANGER_PENALTY_PER_UNIT = 4;
+
+static void evaluate_king_attack_units(const Board& board, Color c,
+                                       int& mg_score, int& eg_score,
+                                       uint64_t occ, const AttackTables& att)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+    Color enemy = opposite(c);
+    int king_sq = board.find_king(c);
+    if (king_sq < 0) return;
+
+    int king_r = king_sq / 8;
+    int king_f = king_sq % 8;
+
+    // King zone: 3x3 around king
+    uint64_t king_zone = 0;
+    for (int dr = -1; dr <= 1; ++dr) {
+        for (int df = -1; df <= 1; ++df) {
+            int zr = king_r + dr;
+            int zf = king_f + df;
+            if (zr >= 0 && zr < 8 && zf >= 0 && zf < 8) {
+                king_zone |= 1ULL << (zr * 8 + zf);
+            }
+        }
+    }
+
+    int attack_units = 0;
+
+    // Knight attacks on king zone
+    uint64_t knights = board.piece_bb(enemy, PieceType::Knight);
+    while (knights) {
+        int sq = __builtin_ctzll(knights);
+        uint64_t att_bb = att.knight[sq] & king_zone;
+        if (att_bb) attack_units += ATTACK_UNIT_WEIGHT[1] * popcount(att_bb);
+        knights &= knights - 1;
+    }
+
+    // Bishop attacks on king zone
+    uint64_t bishops = board.piece_bb(enemy, PieceType::Bishop);
+    while (bishops) {
+        int sq = __builtin_ctzll(bishops);
+        uint64_t att_bb = bishop_attacks(occ, Square(static_cast<uint8_t>(sq))) & king_zone;
+        if (att_bb) attack_units += ATTACK_UNIT_WEIGHT[2] * popcount(att_bb);
+        bishops &= bishops - 1;
+    }
+
+    // Rook attacks on king zone
+    uint64_t rooks = board.piece_bb(enemy, PieceType::Rook);
+    while (rooks) {
+        int sq = __builtin_ctzll(rooks);
+        uint64_t att_bb = rook_attacks(occ, Square(static_cast<uint8_t>(sq))) & king_zone;
+        if (att_bb) attack_units += ATTACK_UNIT_WEIGHT[3] * popcount(att_bb);
+        rooks &= rooks - 1;
+    }
+
+    // Queen attacks on king zone
+    uint64_t queens = board.piece_bb(enemy, PieceType::Queen);
+    while (queens) {
+        int sq = __builtin_ctzll(queens);
+        uint64_t att_bb = queen_attacks(occ, Square(static_cast<uint8_t>(sq))) & king_zone;
+        if (att_bb) attack_units += ATTACK_UNIT_WEIGHT[4] * popcount(att_bb);
+        queens &= queens - 1;
+    }
+
+    // Apply penalty if attack units exceed threshold
+    if (attack_units >= KING_DANGER_THRESHOLD) {
+        int penalty = (attack_units - KING_DANGER_THRESHOLD) * KING_DANGER_PENALTY_PER_UNIT;
+        mg_score += sign * (-penalty);
+        // Small endgame effect
+        eg_score += sign * (-penalty / 4);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trapped bishop/knight penalties (pieces on rim with limited mobility)
+// ---------------------------------------------------------------------------
+
+constexpr int TRAPPED_PENALTY_MG = -30;
+constexpr int TRAPPED_PENALTY_EG = -15;
+
+static void evaluate_trapped_pieces(const Board& board, Color c,
+                                    int& mg_score, int& eg_score,
+                                    uint64_t occ)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+
+    // Check knights on rim (a-file or h-file)
+    uint64_t knights = board.piece_bb(c, PieceType::Knight);
+    constexpr uint64_t RIM_MASK = 0x8181818181818181ULL; // a-file + h-file
+    int rim_knights = popcount(knights & RIM_MASK);
+    mg_score += sign * rim_knights * TRAPPED_PENALTY_MG;
+    eg_score += sign * rim_knights * TRAPPED_PENALTY_EG;
+
+    // Check bishops with very limited mobility (< 4 squares)
+    uint64_t bishops = board.piece_bb(c, PieceType::Bishop);
+    while (bishops) {
+        int sq = __builtin_ctzll(bishops);
+        uint64_t attacks = bishop_attacks(occ, Square(static_cast<uint8_t>(sq)));
+        int mobility = popcount(attacks);
+        if (mobility <= 3) {
+            mg_score += sign * TRAPPED_PENALTY_MG;
+            eg_score += sign * TRAPPED_PENALTY_EG;
+        }
+        bishops &= bishops - 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bad bishop penalty (bishop blocked by own pawns on same color)
+// ---------------------------------------------------------------------------
+
+constexpr int BAD_BISHOP_PENALTY_MG = -12;
+constexpr int BAD_BISHOP_PENALTY_EG = -8;
+
+static void evaluate_bad_bishop(const Board& board, Color c,
+                                int& mg_score, int& eg_score,
+                                uint64_t our_pawns)
+{
+    int sign = (c == Color::White) ? 1 : -1;
+
+    uint64_t bishops = board.piece_bb(c, PieceType::Bishop);
+    while (bishops) {
+        int sq = __builtin_ctzll(bishops);
+        int color = (sq / 8 + sq % 8) % 2; // 0=dark, 1=light
+
+        // Count pawns on the same color as this bishop
+        uint64_t same_color_pawns = 0;
+        for (int i = 0; i < 64; ++i) {
+            if (((i / 8 + i % 8) % 2) == color) {
+                same_color_pawns |= (1ULL << i);
+            }
+        }
+        int blocked_pawns = popcount(our_pawns & same_color_pawns);
+
+        // Penalty increases with more pawns on the same color
+        if (blocked_pawns >= 4) {
+            mg_score += sign * BAD_BISHOP_PENALTY_MG * (blocked_pawns - 3);
+            eg_score += sign * BAD_BISHOP_PENALTY_EG * (blocked_pawns - 3);
+        }
+
+        bishops &= bishops - 1;
     }
 }
 
@@ -964,6 +1251,15 @@ int evaluate(const Board& board) {
                      white_pieces, black_pieces, att);
     evaluate_passed_pawn_kings(board, Color::White, mg_score, eg_score,
                                w_pawns, b_pawns);
+    evaluate_connected_passers(board, Color::White, mg_score, eg_score,
+                               w_pawns, b_pawns);
+    evaluate_rook_behind_passer(board, Color::White, mg_score, eg_score,
+                                w_pawns, b_pawns,
+                                board.piece_bb(Color::White, PieceType::Rook));
+    evaluate_king_attack_units(board, Color::White, mg_score, eg_score,
+                               occ, att);
+    evaluate_trapped_pieces(board, Color::White, mg_score, eg_score, occ);
+    evaluate_bad_bishop(board, Color::White, mg_score, eg_score, w_pawns);
 
     // Black positional terms (subtract from score — handled internally via sign)
     evaluate_mobility(board, Color::Black, mg_score, eg_score,
@@ -983,6 +1279,15 @@ int evaluate(const Board& board) {
                      black_pieces, white_pieces, att);
     evaluate_passed_pawn_kings(board, Color::Black, mg_score, eg_score,
                                b_pawns, w_pawns);
+    evaluate_connected_passers(board, Color::Black, mg_score, eg_score,
+                               b_pawns, w_pawns);
+    evaluate_rook_behind_passer(board, Color::Black, mg_score, eg_score,
+                                b_pawns, w_pawns,
+                                board.piece_bb(Color::Black, PieceType::Rook));
+    evaluate_king_attack_units(board, Color::Black, mg_score, eg_score,
+                               occ, att);
+    evaluate_trapped_pieces(board, Color::Black, mg_score, eg_score, occ);
+    evaluate_bad_bishop(board, Color::Black, mg_score, eg_score, b_pawns);
 
     // Phase interpolation
     int score = (mg_score * phase + eg_score * (MAX_PHASE - phase)) / MAX_PHASE;
@@ -992,8 +1297,10 @@ int evaluate(const Board& board) {
         score = -score;
     }
 
-    // Tempo bonus
-    score += 10;
+    // Tempo bonus (stronger in middlegame, weaker in endgame)
+    int tempo_mg = 12;
+    int tempo_eg = 5;
+    score += (tempo_mg * phase + tempo_eg * (MAX_PHASE - phase)) / MAX_PHASE;
 
     return score;
 }
